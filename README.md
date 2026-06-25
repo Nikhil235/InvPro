@@ -222,3 +222,5 @@ See [backtest_notes.md](backtest_notes.md) for a complete guide on:
 
 This tool is for **personal research and educational purposes only**. Automated scraping may violate Investing.com's Terms of Service. For production trading, use official APIs or licensed data feeds. The strategy signals are **not financial advice** — always do your own analysis.
 
+#   I n v P r o  
+ 
