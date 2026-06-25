@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invpro"
+version = "1.0.0"
+description = "XAU/USD Gold Trading Data Pipeline & Strategy Engine"
+requires-python = ">=3.9"
+dependencies = [
+    "playwright>=1.40",
+    "openpyxl>=3.1",
+    "pandas>=2.0",
+    "python-dotenv>=1.0",
+    "colorama>=0.4",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+dev = [
+    "invpro[test]",
+]
+
+[tool.setuptools.packages.find]
+include = ["config*", "core*", "utils*", "paper_trading*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

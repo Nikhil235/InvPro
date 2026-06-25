@@ -1,0 +1,36 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Environment ─────────────────────────────────────────
+.env
+.venv/
+venv/
+env/
+
+# ── Project output (auto-generated) ─────────────────────
+data/
+logs/
+session/
+paper_trading/output/
+health.json
+
+# ── IDE ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Node (dashboard) ────────────────────────────────────
+node_modules/
+dashboard/node_modules/
+
+# ── OS ──────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
