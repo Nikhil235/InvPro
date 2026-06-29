@@ -31,9 +31,43 @@ def _make_signal(direction="LONG", **overrides) -> StrategySignal:
 
 class TestSignalRouter:
     def setup_method(self):
-        self.broker = PaperBroker(initial_capital=10_000.0)
-        self.risk = RiskManager(initial_capital=10_000.0)
-        self.router = SignalRouter(self.broker, self.risk)
+        import os
+        from core.database import Database
+        from core.clock import ClockService
+        from core.event_bus import EventBus
+        from paper_trading.core.account_ledger import AccountLedger
+        
+        self.db_path = "test_trading_router.db"
+        if os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
+                
+        self.db = Database(db_path=self.db_path)
+        self.db.migrate()
+        self.clock = ClockService(mode="live")
+        self.event_bus = EventBus()
+        self.session_id = "test_session"
+        self.ledger = AccountLedger(self.db, self.clock, self.event_bus, self.session_id, 10_000.0)
+        self.broker = PaperBroker(self.db, self.clock, self.event_bus, self.ledger, self.session_id)
+        self.risk = RiskManager(self.clock, self.event_bus, self.ledger, self.session_id)
+        self.router = SignalRouter(self.broker, self.risk, self.event_bus)
+
+    def teardown_method(self):
+        import os
+        # Close connection to allow file deletion on Windows
+        if hasattr(self, 'db'):
+            self.db = None
+            
+        import time
+        time.sleep(0.1)
+        
+        if hasattr(self, 'db_path') and os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
 
     def test_flat_signal_skipped(self):
         signal = _make_signal(direction="FLAT")
@@ -68,7 +102,7 @@ class TestSignalRouter:
         result = self.router.process_signal(sig_short, current_price=4100.0)
         # Old long should be closed, new short opened
         assert self.broker.open_position_count == 1
-        assert len(self.broker.closed_trades) >= 1
+        assert len(self.db.fetchall("SELECT * FROM trades")) >= 1
 
     def test_signal_missing_fields_rejected(self):
         signal = _make_signal(direction="LONG", entry_price=None)

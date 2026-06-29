@@ -133,3 +133,58 @@ class TestRiskManager:
         # Should pass on day 2 (counters reset)
         ok2, _ = self.rm.check_order(order, 0, 10_000, timestamp=ts_day2)
         assert ok2 is True
+
+    def test_gate_7_macro_news_risk(self):
+        # 1. Enable news_risk_filter in store settings
+        from api.store import store
+        from api.models import Settings
+        
+        orig_settings = store.get_settings()
+        try:
+            store.update_settings(Settings(news_risk_filter=True))
+            
+            # Check order before logging any event - should pass
+            order = _make_order()
+            ok, reason = self.rm.check_order(order, open_position_count=0, current_balance=10_000)
+            assert ok is True
+            assert reason == "APPROVED"
+            
+            # 2. Insert a HIGH impact RISK_OFF geopolitical news event into the db
+            self.rm._ledger._db.execute("""
+                INSERT INTO news_events (
+                    timestamp, headline, summary, source_url, sentiment, 
+                    impact_score, confidence, target_market, horizon_hours
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now(timezone.utc).isoformat(),
+                "BREAKING: Heavy naval blockade on Middle East oil route",
+                "Conflict intensifies.",
+                "http://example.com/test",
+                "RISK_OFF",
+                "HIGH",
+                0.9,
+                "Gold",
+                48
+            ))
+            
+            # Check order after logging event - should reject
+            ok, reason = self.rm.check_order(order, open_position_count=0, current_balance=10_000)
+            assert ok is False
+            assert "Blocked by Macro News Gate" in reason
+            
+            # 3. Disable news_risk_filter in settings
+            store.update_settings(Settings(news_risk_filter=False))
+            
+            # Check order again - should pass despite the recent event
+            ok, reason = self.rm.check_order(order, open_position_count=0, current_balance=10_000)
+            assert ok is True
+            assert reason == "APPROVED"
+            
+        finally:
+            # Restore original settings
+            store.update_settings(orig_settings)
+            # Clear test database news_events
+            try:
+                self.rm._ledger.db.execute("DELETE FROM news_events")
+            except Exception:
+                pass

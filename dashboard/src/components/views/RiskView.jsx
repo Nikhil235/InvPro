@@ -2,18 +2,19 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui
 import { ShieldAlert, AlertTriangle } from 'lucide-react';
 import { useFetch } from '../../hooks/useFetch';
 import { API_BASE_URL } from '../../config';
-
+import { useLiveData } from '../../contexts/LiveDataContext';
 
 export function RiskView() {
+  const { accountData } = useLiveData();
   const { data: settings } = useFetch(`${API_BASE_URL}/api/v1/settings`);
   const { data: metrics } = useFetch(`${API_BASE_URL}/api/v1/metrics`, 5000);
 
-  const balance = metrics?.balance || 10000;
+  const balance = accountData?.balance || metrics?.balance || 10000;
   const riskPct = settings?.risk_per_trade_pct || 0.01;
   const maxDrawdown = settings?.max_daily_drawdown || 300;
-  const currentDrawdown = balance < 10000 ? 10000 - balance : 0;
   
-  const drawdownPct = (currentDrawdown / maxDrawdown) * 100;
+  const currentDrawdown = accountData?.drawdown_abs || 0;
+  const limitProximityPct = (currentDrawdown / maxDrawdown) * 100;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -65,12 +66,12 @@ export function RiskView() {
               <div className="mt-4">
                 <div className="flex justify-between text-xs mb-1">
                   <span className="text-secondary">Limit Proximity</span>
-                  <span className={`${drawdownPct > 80 ? 'text-bearish' : 'text-bullish'}`}>{drawdownPct.toFixed(1)}%</span>
+                  <span className={`${limitProximityPct > 80 ? 'text-bearish' : 'text-bullish'}`}>{limitProximityPct.toFixed(1)}%</span>
                 </div>
                 <div className="w-full bg-surface rounded-full h-2">
                   <div 
-                    className={`h-2 rounded-full ${drawdownPct > 80 ? 'bg-bearish' : 'bg-bullish'}`} 
-                    style={{ width: `${Math.min(drawdownPct, 100)}%` }}
+                    className={`h-2 rounded-full ${limitProximityPct > 80 ? 'bg-bearish' : 'bg-bullish'}`} 
+                    style={{ width: `${Math.min(limitProximityPct, 100)}%` }}
                   ></div>
                 </div>
               </div>

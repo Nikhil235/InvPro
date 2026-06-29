@@ -1,7 +1,7 @@
 import { 
   LayoutDashboard, Activity, BookOpen, 
   Settings, Terminal, Briefcase, 
-  TrendingUp, ShieldAlert, Bell
+  TrendingUp, ShieldAlert, Bell, Brain
 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { cn } from '../../lib/utils';
@@ -9,6 +9,7 @@ import { cn } from '../../lib/utils';
 const items = [
   { title: "Dashboard", icon: LayoutDashboard, path: "/" },
   { title: "Signals", icon: Activity, path: "/signals" },
+  { title: "Intelligence", icon: Brain, path: "/intelligence" },
   { title: "Paper Trades", icon: Briefcase, path: "/trades" },
   { title: "Journal", icon: BookOpen, path: "/journal" },
   { title: "Performance", icon: TrendingUp, path: "/performance" },

@@ -280,6 +280,18 @@ class GoldScraper:
         pointing it to our session directory. Google sees a 100% legitimate
         browser, allowing the popup to work flawlessly.
         """
+        import os
+        import sys
+        
+        is_headless_env = (sys.platform != "win32" and not os.environ.get("DISPLAY"))
+        if is_headless_env:
+            log.critical("InvestingPro is locked, but interactive Google sign-in cannot be executed in headless environments.")
+            raise RuntimeError(
+                "InvestingPro session is locked. Interactive Google sign-in is required. "
+                "Please run the pipeline once locally (with HEADLESS=False) to create your session profile, "
+                "then copy the 'session/' folder to your server."
+            )
+
         print("\n" + "=" * 70)
         print("  INVESTINGPRO SIGN-IN REQUIRED")
         print("  " + "-" * 66)

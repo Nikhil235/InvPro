@@ -8,7 +8,7 @@ export function SignalsView() {
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white mb-2">Live Signals Breakdown</h1>
+        <h1 className="text-2xl font-bold text-white mb-2">Simulated Signals Breakdown</h1>
         <p className="text-secondary">Detailed view of all technical indicators feeding the strategy engine.</p>
       </div>
 

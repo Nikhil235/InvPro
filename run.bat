@@ -7,12 +7,12 @@ echo =========================================
 cd /d "%~dp0"
 
 echo [1/3] Starting FastAPI Backend...
-start "FastAPI Backend" cmd /k "title FastAPI Backend && python -m uvicorn api.server:app --reload --port 8000"
+start "FastAPI Backend" cmd /k "title FastAPI Backend && python main.py"
 
 echo [2/3] Starting Trading Engine...
 :: Wait 2 seconds to ensure backend is up before engine starts pushing data
 timeout /t 2 /nobreak >nul
-start "Trading Engine" cmd /k "title Trading Engine && python main.py"
+start "Trading Engine" cmd /k "title Trading Engine && python -m paper_trading.main --mode live"
 
 echo [3/3] Starting React Frontend...
 cd dashboard

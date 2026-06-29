@@ -1,12 +1,14 @@
 import { useFetch } from '../../hooks/useFetch';
+import { useLiveData } from '../../contexts/LiveDataContext';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { API_BASE_URL } from '../../config';
 
 
 export function PerformanceView() {
+  const { activeSessionId } = useLiveData() || {};
   const { data: metrics } = useFetch(`${API_BASE_URL}/api/v1/metrics`, 5000);
-  const { data: trades } = useFetch(`${API_BASE_URL}/api/v1/trades`, 5000);
+  const { data: trades } = useFetch(activeSessionId ? `${API_BASE_URL}/api/trades?session_id=${activeSessionId}` : null, 5000);
 
   // Generate an equity curve from historical trades
   const equityCurve = [];

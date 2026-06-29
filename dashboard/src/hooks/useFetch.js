@@ -9,6 +9,10 @@ export function useFetch(url, pollIntervalMs = null) {
     let isMounted = true;
     
     const fetchData = async () => {
+      if (!url) {
+        if (isMounted) setLoading(false);
+        return;
+      }
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error(res.statusText);

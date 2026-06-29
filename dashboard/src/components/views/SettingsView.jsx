@@ -11,7 +11,9 @@ export function SettingsView() {
     risk_per_trade_pct: 0.01,
     max_daily_drawdown: 300.0,
     telegram_alerts: true,
-    auto_trading: false
+    auto_trading: false,
+    news_risk_filter: false,
+    use_news_simulation: true
   });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -117,11 +119,33 @@ export function SettingsView() {
             <div className="flex items-center justify-between p-4 bg-surface/30 rounded-lg border border-border">
               <div>
                 <p className="text-white font-medium">Auto Trading</p>
-                <p className="text-xs text-bearish">WARNING: Enables live execution to MT5/Paper Broker.</p>
+                <p className="text-xs text-bearish">WARNING: Enables automated execution to the Paper Broker.</p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" name="auto_trading" checked={settings.auto_trading} onChange={handleChange} className="sr-only peer" />
                 <div className="w-11 h-6 bg-surface border border-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary peer-checked:after:bg-bullish after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:border-bullish"></div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-surface/30 rounded-lg border border-border">
+              <div>
+                <p className="text-white font-medium">Macro News Risk Gate</p>
+                <p className="text-xs text-secondary">Freeze trading actions if a High-Impact geopolitical RISK_OFF event is logged within the last 2 hours.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" name="news_risk_filter" checked={settings.news_risk_filter || false} onChange={handleChange} className="sr-only peer" />
+                <div className="w-11 h-6 bg-surface border border-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary peer-checked:after:bg-gold after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:border-gold"></div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-surface/30 rounded-lg border border-border">
+              <div>
+                <p className="text-white font-medium">Simulated News Feed</p>
+                <p className="text-xs text-secondary">Toggles between simulating a mock geopolitical feed or parsing real-time Yahoo Finance RSS feeds.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" name="use_news_simulation" checked={settings.use_news_simulation !== false} onChange={handleChange} className="sr-only peer" />
+                <div className="w-11 h-6 bg-surface border border-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-secondary peer-checked:after:bg-gold after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:border-gold"></div>
               </label>
             </div>
           </div>

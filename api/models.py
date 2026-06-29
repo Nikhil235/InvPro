@@ -27,6 +27,8 @@ class Settings(BaseModel):
     max_daily_drawdown: float = Field(default=300.0)
     telegram_alerts: bool = Field(default=True)
     auto_trading: bool = Field(default=False)
+    news_risk_filter: bool = Field(default=False)
+    use_news_simulation: bool = Field(default=True)
 
 class LogEntry(BaseModel):
     id: Optional[int] = None
@@ -58,7 +60,38 @@ class ActivePosition(BaseModel):
     take_profit: Optional[float] = None
     open_time: str
     unrealised_pnl: float = 0.0
+    tp1: Optional[float] = None
+    tp2: Optional[float] = None
+    tp3: Optional[float] = None
+    tp1_hit: bool = False
+    tp2_hit: bool = False
+    tp3_hit: bool = False
+    realised_pnl: float = 0.0
+    initial_lots: float = 0.0
 
 class BrokerEvent(BaseModel):
     type: str
     payload: Dict[str, Any]
+
+class OrderType(str):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP = "STOP"
+
+class PendingOrder(BaseModel):
+    order_id: int
+    type: str
+    side: str
+    requested_price: float
+    lots: float
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    status: str = "PENDING"
+    created_at: str
+
+class AccountState(BaseModel):
+    timestamp: str
+    balance: float
+    equity: float
+    peak_equity: float
+    drawdown_pct: float

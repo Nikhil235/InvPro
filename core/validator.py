@@ -62,6 +62,11 @@ class DataValidator:
                 log.warning(f"Invalid signal '{signal}' in column '{col}', corrected to N/A")
                 corrections[col] = "N/A"
 
+        # Coerce non-signal 'N/A' or '-' strings to None to prevent Strategy TypeErrors
+        for col, val in row.items():
+            if col not in EXCEL_COLUMNS and val in ("N/A", "-"):
+                corrections[col] = None
+
         # ----- Check 4: Staleness detection -----
         if price == self._last_price:
             self._consecutive_same_price += 1

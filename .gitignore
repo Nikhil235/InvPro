@@ -34,3 +34,10 @@ dashboard/node_modules/
 # ── OS ──────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
+
+# ── Local DBs, logs & browser cache ─────────────────────
+*.db
+*.db.bak
+*.db-journal
+*.log
+session_cli/

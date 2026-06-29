@@ -1,9 +1,11 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { Toaster } from 'sonner';
 import { DashboardLayout } from './components/layout/DashboardLayout';
 import { DashboardHome } from './components/views/DashboardHome';
 import { JournalView } from './components/views/JournalView';
 import { LogsView } from './components/views/LogsView';
 import { SignalsView } from './components/views/SignalsView';
+import { IntelligenceView } from './components/views/IntelligenceView';
 import { SettingsView } from './components/views/SettingsView';
 import { PaperTradesView } from './components/views/PaperTradesView';
 import { PerformanceView } from './components/views/PerformanceView';
@@ -21,11 +23,13 @@ const Placeholder = ({ title }) => (
 function App() {
   return (
     <LiveDataProvider>
+      <Toaster theme="dark" position="bottom-right" richColors />
       <Router>
         <DashboardLayout>
           <Routes>
             <Route path="/" element={<DashboardHome />} />
             <Route path="/signals" element={<SignalsView />} />
+            <Route path="/intelligence" element={<IntelligenceView />} />
             <Route path="/trades" element={<PaperTradesView />} />
             <Route path="/journal" element={<JournalView />} />
             <Route path="/performance" element={<PerformanceView />} />
@@ -34,8 +38,6 @@ function App() {
             <Route path="/logs" element={<LogsView />} />
             <Route path="/settings" element={<SettingsView />} />
           </Routes>
-
-
         </DashboardLayout>
       </Router>
     </LiveDataProvider>

@@ -51,7 +51,8 @@ def _env_str(key: str, default: str) -> str:
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 LOG_DIR = PROJECT_ROOT / "logs"
-SESSION_DIR = PROJECT_ROOT / "session"   # Persistent browser state (cookies, localStorage)
+PROCESS_TYPE = os.environ.get("INVPRO_PROCESS_TYPE", "cli")
+SESSION_DIR = PROJECT_ROOT / f"session_{PROCESS_TYPE}"   # Persistent browser state (cookies, localStorage)
 HEALTH_FILE = PROJECT_ROOT / "health.json"
 
 # Ensure output directories exist on import

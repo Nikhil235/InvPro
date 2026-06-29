@@ -30,6 +30,8 @@ import os
 import signal
 import sys
 import time
+import uuid
+from core.database import Database
 
 # Fix Windows console encoding
 if sys.platform == "win32":
@@ -41,8 +43,10 @@ if sys.platform == "win32":
         pass
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
+
+from paper_trading.utils.market_hours import is_market_open
 
 from paper_trading.config.settings import (
     INITIAL_CAPITAL,
@@ -56,7 +60,15 @@ from paper_trading.core.risk_manager import RiskManager
 from paper_trading.core.signal_router import SignalRouter
 from paper_trading.core.journal import TradeJournal
 from paper_trading.core.performance import PerformanceTracker
+from paper_trading.core.account_ledger import AccountLedger
 from paper_trading.utils.logger import get_logger
+
+from core.clock import ClockService
+from core.event_bus import EventBus
+from core.events import (
+    ORDER_SUBMITTED, ORDER_FILLED, ORDER_REJECTED, ORDER_CANCELLED,
+    POSITION_UPDATE, TRADE_CLOSED, ACCOUNT_SNAPSHOT
+)
 
 import requests
 
@@ -67,10 +79,18 @@ _shutdown = False
 
 def _push_event_to_api(event_type: str, payload: dict) -> None:
     try:
-        requests.post("http://localhost:8000/api/v1/internal/event", json={
-            "type": event_type,
+        requests.post("http://localhost:8000/api/internal/push_event", json={
+            "event_type": event_type,
             "payload": payload
         }, timeout=0.5)
+        
+        if event_type == "SIGNAL" or event_type == "SIGNAL_UPDATE":
+            requests.post("http://localhost:8000/api/v1/internal/update", json=payload, timeout=0.5)
+        else:
+            requests.post("http://localhost:8000/api/v1/internal/event", json={
+                "type": event_type,
+                "payload": payload
+            }, timeout=0.5)
     except Exception:
         pass
 
@@ -119,14 +139,35 @@ def run_replay(file_path: str, capital: float) -> None:
     print()
 
     # Initialise components
-    journal = TradeJournal()
+    db = Database()
+    db.migrate()
+    session_id = uuid.uuid4().hex
+    clock = ClockService(mode="replay")
+    event_bus = EventBus()
+    ledger = AccountLedger(db, clock, event_bus, session_id, capital)
+    
+    journal = TradeJournal(db, session_id)
+    stats = {"trades": 0, "pnl": 0.0, "signals": 0}
+
+    def on_event(ev, payload):
+        _handle_broker_event(payload, journal)
+        if ev == TRADE_CLOSED:
+            stats["trades"] += 1
+            stats["pnl"] += payload.get("net_pnl", 0.0)
+
+    for ev in [ORDER_SUBMITTED, ORDER_FILLED, ORDER_REJECTED, ORDER_CANCELLED, POSITION_UPDATE, TRADE_CLOSED, ACCOUNT_SNAPSHOT]:
+        event_bus.subscribe(ev, lambda e, event_type=ev: on_event(event_type, e))
+
     broker = PaperBroker(
-        initial_capital=capital,
-        on_event=lambda e: _handle_broker_event(e, journal),
+        db=db,
+        clock=clock,
+        event_bus=event_bus,
+        ledger=ledger,
+        session_id=session_id
     )
-    risk_mgr = RiskManager(initial_capital=capital)
-    router = SignalRouter(broker, risk_mgr)
-    strategy = TradingStrategy()
+    risk_mgr = RiskManager(clock, event_bus, ledger, session_id)
+    router = SignalRouter(broker, risk_mgr, event_bus)
+    strategy = TradingStrategy(db=db, session_id=session_id, clock=clock)
     perf = PerformanceTracker(initial_capital=capital)
 
     print(f"  Processing {total_rows:,} rows...\n")
@@ -152,37 +193,57 @@ def run_replay(file_path: str, capital: float) -> None:
                 ts = row["Date-Time"]
 
         # Feed to strategy
-        signal = strategy.evaluate(row)
+        signal = strategy.evaluate(row, current_balance=broker.equity)
 
         # Tick broker (check SL/TP on open positions)
         closed_trades = broker.tick(price, timestamp=ts)
         for t in closed_trades:
-            risk_mgr.record_trade_result(t.net_pnl, timestamp=ts)
+            risk_mgr.record_trade_result(t.net_pnl)
             journal.record_trade(t)
             
         # Push periodic position update
         if broker.open_positions:
             _push_event_to_api("POSITION_UPDATE", {
-                "positions": [{"position_id": p.position_id, "unrealised_pnl": p.unrealised_pnl} for p in broker.open_positions],
+                "positions": [
+                    {
+                        "position_id": p.position_id,
+                        "unrealised_pnl": p.unrealised_pnl,
+                        "lots": p.lots,
+                        "stop_loss": p.stop_loss,
+                        "tp1_hit": p.tp1_hit,
+                        "tp2_hit": p.tp2_hit,
+                        "tp3_hit": p.tp3_hit,
+                        "realised_pnl": p.realised_pnl,
+                    } for p in broker.open_positions
+                ],
                 "total_unrealised_pnl": sum(p.unrealised_pnl for p in broker.open_positions)
             })
 
         # Route signal
+        dir_str = signal.direction if signal else "FLAT"
         if signal is not None and signal.direction != "FLAT":
+            stats["signals"] += 1
             router.process_signal(signal, current_price=price, timestamp=ts)
+
+        _push_event_to_api("SIGNAL", {
+            "timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+            "price": float(price),
+            "direction": dir_str,
+            "signals": {},
+            "row_count": idx
+        })
 
         # Progress indicator
         if (idx + 1) % 1000 == 0 or idx == total_rows - 1:
             pct = ((idx + 1) / total_rows) * 100
             pos_count = broker.open_position_count
-            trade_count = len(broker.closed_trades)
             print(
                 f"\r  [{pct:5.1f}%] Row {idx+1:,}/{total_rows:,} | "
                 f"Price: ${price:,.2f} | "
                 f"Equity: ${broker.equity:,.2f} | "
                 f"Open: {pos_count} | "
-                f"Closed: {trade_count} | "
-                f"Signals: {router.signals_received}",
+                f"Closed: {stats['trades']} | "
+                f"Signals: {stats['signals']}",
                 end="", flush=True,
             )
 
@@ -200,7 +261,7 @@ def run_replay(file_path: str, capital: float) -> None:
             price=last_price, timestamp=last_ts
         )
         for t in closed:
-            risk_mgr.record_trade_result(t.net_pnl, timestamp=last_ts)
+            risk_mgr.record_trade_result(t.net_pnl)
             journal.record_trade(t)
 
     print("\n")
@@ -222,6 +283,7 @@ def run_live(capital: float) -> None:
     from core.parser import parse_snapshot
     from core.validator import DataValidator
     from core.strategy import TradingStrategy
+    from core.storage import ExcelStorage
     from config.settings import (
         REFRESH_INTERVAL_SECONDS,
         MAX_RETRIES,
@@ -231,26 +293,72 @@ def run_live(capital: float) -> None:
     log.info("LIVE DRY-RUN MODE: Connecting to real-time pipeline")
 
     # Initialise components
-    journal = TradeJournal()
-    risk_mgr = RiskManager(initial_capital=capital)
+    db = Database()
+    db.migrate()
+    
+    # State Recovery: Check for an active session
+    row = db.fetchone("SELECT session_id, initial_capital FROM sessions WHERE status = 'active' AND mode = 'live' ORDER BY started_at DESC LIMIT 1")
+    if row:
+        session_id = row["session_id"]
+        if row["initial_capital"] is not None:
+            capital = row["initial_capital"]
+        log.info(f"State Recovery: Resuming active live session {session_id} with capital ${capital:,.2f}")
+    else:
+        session_id = uuid.uuid4().hex
+        db.execute("""
+            INSERT INTO sessions (session_id, mode, started_at, initial_capital, status)
+            VALUES (?, ?, ?, ?, ?)
+        """, (session_id, 'live', datetime.now(timezone.utc).isoformat(), capital, 'active'))
+        log.info(f"Started new live session {session_id}")
+    clock = ClockService(mode="live")
+    event_bus = EventBus()
+    ledger = AccountLedger(db, clock, event_bus, session_id, capital)
+    
+    journal = TradeJournal(db, session_id)
+    stats = {"trades": 0, "pnl": 0.0, "signals": 0}
+
+    def on_event(ev, payload):
+        _handle_broker_event(payload, journal)
+        if ev == TRADE_CLOSED:
+            stats["trades"] += 1
+            stats["pnl"] += payload.get("net_pnl", 0.0)
+
+    for ev in [ORDER_SUBMITTED, ORDER_FILLED, ORDER_REJECTED, ORDER_CANCELLED, POSITION_UPDATE, TRADE_CLOSED, ACCOUNT_SNAPSHOT]:
+        event_bus.subscribe(ev, lambda e, event_type=ev: on_event(event_type, e))
+
+    risk_mgr = RiskManager(clock, event_bus, ledger, session_id)
     broker = PaperBroker(
-        initial_capital=capital,
-        on_event=lambda e: _handle_broker_event(e, journal),
+        db=db,
+        clock=clock,
+        event_bus=event_bus,
+        ledger=ledger,
+        session_id=session_id
     )
-    router = SignalRouter(broker, risk_mgr)
-    strategy = TradingStrategy()
+    router = SignalRouter(broker, risk_mgr, event_bus)
+    strategy = TradingStrategy(db=db, session_id=session_id, clock=clock)
     validator = DataValidator()
+    storage = ExcelStorage()
     perf = PerformanceTracker(initial_capital=capital)
 
     # Launch browser
     scraper = GoldScraper()
     cycle = 0
+    consecutive_failures = 0
+    
+    # Data Quality Watchdog
+    last_price = None
+    last_price_change_time = time.time()
 
     try:
         log.info("Starting browser for live paper trading...")
         scraper.start()
         log.info("Browser ready. Paper trading active.")
         print("  Live paper trading active. Press Ctrl+C to stop.\n")
+
+        _push_event_to_api("SESSION_STATUS", {
+            "state": "running",
+            "session_id": session_id
+        })
 
         while not _shutdown:
             cycle += 1
@@ -268,21 +376,50 @@ def run_live(capital: float) -> None:
                             time.sleep(RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
 
                 if raw is None:
-                    time.sleep(REFRESH_INTERVAL_SECONDS)
-                    continue
+                    price = None
+                else:
+                    # Parse + validate
+                    row = parse_snapshot(raw)
+                    is_valid, reason, corrections = validator.validate(row)
+                    if corrections:
+                        row.update(corrections)
+                    price = row.get("Price")
 
-                # Parse + validate
-                row = parse_snapshot(raw)
-                is_valid, reason, corrections = validator.validate(row)
-                if corrections:
-                    row.update(corrections)
-
-                price = row.get("Price")
                 if price is None:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 10:
+                        log.error("Circuit breaker tripped: 10 consecutive scraper failures. Shutting down.")
+                        _push_event_to_api("SYSTEM_ERROR", {"message": "Scraper feed disconnected. Circuit breaker tripped."})
+                        _shutdown = True
+                        break
+                    if consecutive_failures % 3 == 0:
+                        log.warning("Multiple scraper failures. Forcing browser reload...")
+                        try:
+                            scraper.force_reload()
+                        except Exception as e:
+                            log.error(f"Force reload failed: {e}")
                     time.sleep(REFRESH_INTERVAL_SECONDS)
                     continue
+                else:
+                    consecutive_failures = 0
 
-                ts = row.get("Date-Time", datetime.now())
+                ts = row.get("Date-Time", datetime.now(timezone.utc))
+                if ts and ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+
+                # Data Quality Watchdog
+                current_time = time.time()
+                if price != last_price:
+                    last_price = price
+                    last_price_change_time = current_time
+                    if getattr(router, '_paused', False):
+                        router.resume()
+                        _push_event_to_api("SESSION_STATUS", {"state": "running", "session_id": session_id})
+                elif (current_time - last_price_change_time) > 60:
+                    if not getattr(router, '_paused', False):
+                        router.pause_and_liquidate(price=price, timestamp=ts)
+                        state_msg = "stale" if is_market_open(ts) else "market_closed"
+                        _push_event_to_api("SESSION_STATUS", {"state": state_msg, "session_id": session_id})
 
                 # Tick broker
                 closed_trades = broker.tick(price, timestamp=ts)
@@ -293,14 +430,54 @@ def run_live(capital: float) -> None:
                 # Push periodic position update
                 if broker.open_positions:
                     _push_event_to_api("POSITION_UPDATE", {
-                        "positions": [{"position_id": p.position_id, "unrealised_pnl": p.unrealised_pnl} for p in broker.open_positions],
+                        "positions": [
+                            {
+                                "position_id": p.position_id,
+                                "unrealised_pnl": p.unrealised_pnl,
+                                "lots": p.lots,
+                                "stop_loss": p.stop_loss,
+                                "tp1_hit": p.tp1_hit,
+                                "tp2_hit": p.tp2_hit,
+                                "tp3_hit": p.tp3_hit,
+                                "realised_pnl": p.realised_pnl,
+                            } for p in broker.open_positions
+                        ],
                         "total_unrealised_pnl": sum(p.unrealised_pnl for p in broker.open_positions)
                     })
 
                 # Strategy
-                signal = strategy.evaluate(row)
+                signal = strategy.evaluate(row, current_balance=broker.equity)
+                
+                # Update row with strategy signal parameters before writing to Excel
+                if signal:
+                    row.update(signal.to_row_dict())
+                else:
+                    row.update({
+                        "Signal": "FLAT",
+                        "Bias": "N/A",
+                        "Confidence": "LOW",
+                        "Reason": "No signal generated"
+                    })
+                    
+                if is_valid:
+                    storage.append_row(row)
+
+                dir_str = signal.direction if signal else "FLAT"
                 if signal is not None and signal.direction != "FLAT":
+                    stats["signals"] += 1
                     router.process_signal(signal, current_price=price, timestamp=ts)
+
+                signals_dict = {
+                    k: v for k, v in row.items() 
+                    if k in ("1 min", "5 min", "15 min", "30 min", "Hourly", "5 Hours", "Daily", "Weekly", "Monthly")
+                }
+                _push_event_to_api("SIGNAL", {
+                    "timestamp": ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+                    "price": float(price),
+                    "direction": dir_str,
+                    "signals": signals_dict,
+                    "row_count": cycle
+                })
 
                 # Dashboard
                 dir_str = signal.direction if signal else "---"
@@ -312,8 +489,8 @@ def run_live(capital: float) -> None:
                     f"{dir_icon:<9} | "
                     f"Eq: ${broker.equity:>10,.2f} | "
                     f"Open: {broker.open_position_count} | "
-                    f"Trades: {len(broker.closed_trades)} | "
-                    f"P&L: ${sum(t.net_pnl for t in broker.closed_trades):>+10,.2f}",
+                    f"Trades: {stats['trades']} | "
+                    f"P&L: ${stats['pnl']:>+10,.2f}",
                     end="", flush=True,
                 )
 
@@ -331,6 +508,8 @@ def run_live(capital: float) -> None:
     except Exception as e:
         log.critical(f"Fatal error: {e}", exc_info=True)
     finally:
+        if 'storage' in locals():
+            storage.close()
         # Close open positions at last price
         if broker.open_position_count > 0:
             log.info("Closing open positions at session end...")
@@ -341,6 +520,19 @@ def run_live(capital: float) -> None:
 
         scraper.stop()
         print("\n")
+        
+        _push_event_to_api("SESSION_STATUS", {
+            "state": "idle",
+            "session_id": None
+        })
+
+        # Mark session as gracefully completed so it isn't recovered
+        try:
+            db.execute("UPDATE sessions SET status = 'completed', ended_at = ? WHERE session_id = ?", (datetime.now(timezone.utc).isoformat(), session_id))
+            log.info(f"Session {session_id} marked as completed.")
+        except Exception as e:
+            log.error(f"Failed to complete session in DB: {e}")
+
         _finalise_session(broker, journal, perf, router, risk_mgr)
 
 
@@ -366,7 +558,7 @@ def _finalise_session(
     """Print final report, save journal, and export equity curve."""
 
     # Write Excel journal
-    journal.flush_excel()
+    journal.export_excel()
 
     # Compute and print performance
     report = perf.compute(broker.closed_trades)

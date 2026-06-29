@@ -11,15 +11,9 @@ from .store import store
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Live Trading Dashboard API")
+from fastapi import APIRouter
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+legacy_router = APIRouter()
 
 class ConnectionManager:
     def __init__(self):
@@ -47,68 +41,89 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-@app.get("/api/v1/health")
+@legacy_router.get("/api/v1/health")
 async def health_check():
     return {"status": "ok"}
 
-@app.get("/api/v1/signal/current")
+@legacy_router.get("/api/v1/signal/current")
 async def get_current_signal():
     signal = store.get_current_signal()
     return signal if signal else {"status": "No signal available"}
 
-@app.get("/api/v1/trades")
+@legacy_router.get("/api/v1/trades")
 async def get_trades(limit: int = 50, offset: int = 0):
     return store.get_trades(limit, offset)
 
-@app.get("/api/v1/positions")
+@legacy_router.get("/api/v1/positions")
 async def get_positions():
     return store.get_active_positions()
 
-@app.get("/api/v1/orders")
+@legacy_router.get("/api/v1/orders")
 async def get_orders():
-    return []
+    return store.get_pending_orders()
 
-@app.get("/api/v1/metrics")
+@legacy_router.delete("/api/v1/orders/{order_id}")
+async def cancel_order(order_id: int):
+    store.delete_pending_order(order_id)
+    # Broadcast to UI
+    await manager.broadcast({
+        "type": "BROKER_EVENT",
+        "payload": {
+            "type": "ORDER_CANCELLED",
+            "order_id": order_id
+        }
+    })
+    return {"status": "ok"}
+
+@legacy_router.get("/api/v1/account")
+async def get_account():
+    state = store.get_latest_account_state()
+    if state:
+        return state
+    # Fallback if no state yet
+    return {"timestamp": "", "balance": store.get_metrics().balance, "equity": store.get_metrics().balance, "peak_equity": store.get_metrics().balance, "drawdown_pct": 0.0}
+
+@legacy_router.get("/api/v1/metrics")
 async def get_metrics():
     return store.get_metrics()
 
-@app.get("/api/v1/chart/candles")
+@legacy_router.get("/api/v1/chart/candles")
 async def get_candles(limit: int = 500):
     return store.get_candles(limit)
 
-@app.get("/api/v1/alerts")
+@legacy_router.get("/api/v1/alerts")
 async def get_alerts():
     return store.get_alert_rules()
 
-@app.post("/api/v1/alerts")
+@legacy_router.post("/api/v1/alerts")
 async def add_alert(rule: AlertRule):
     store.add_alert_rule(rule)
     return {"status": "ok"}
 
-@app.delete("/api/v1/alerts/{rule_id}")
+@legacy_router.delete("/api/v1/alerts/{rule_id}")
 async def delete_alert(rule_id: int):
     store.delete_alert_rule(rule_id)
     return {"status": "ok"}
 
-@app.get("/api/v1/logs")
+@legacy_router.get("/api/v1/logs")
 async def get_logs(limit: int = 100, offset: int = 0):
     return store.get_logs(limit, offset)
 
-@app.post("/api/v1/logs")
+@legacy_router.post("/api/v1/logs")
 async def add_log(entry: LogEntry):
     store.add_log(entry)
     return {"status": "ok"}
 
-@app.get("/api/v1/settings")
+@legacy_router.get("/api/v1/settings")
 async def get_settings():
     return store.get_settings()
 
-@app.post("/api/v1/settings")
+@legacy_router.post("/api/v1/settings")
 async def update_settings(settings: Settings):
     store.update_settings(settings)
     return {"status": "ok"}
 
-@app.post("/api/v1/internal/update")
+@legacy_router.post("/api/v1/internal/update")
 async def receive_update(data: SignalUpdate):
     store.update_signal(data)
     await manager.broadcast({
@@ -126,7 +141,7 @@ async def receive_update(data: SignalUpdate):
         
     return {"status": "ok"}
 
-@app.post("/api/v1/internal/event")
+@legacy_router.post("/api/v1/internal/event")
 async def receive_event(event: BrokerEvent):
     store.process_broker_event(event)
     await manager.broadcast({
@@ -135,7 +150,7 @@ async def receive_event(event: BrokerEvent):
     })
     return {"status": "ok"}
 
-@app.websocket("/ws")
+@legacy_router.websocket("/old_ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:

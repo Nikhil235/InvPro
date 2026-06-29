@@ -11,17 +11,14 @@ Gates:
     4. Signal confidence >= MIN_CONFIDENCE
     5. Stop loss and take profit must be present and valid
     6. Reward:risk ratio >= MIN_REWARD_RISK
-
-WARNING: Paper trading only. No live execution. All results are simulated.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from paper_trading.config.settings import (
-    INITIAL_CAPITAL,
     MAX_DAILY_LOSS_PCT,
     MAX_DAILY_TRADES,
     MAX_OPEN_POSITIONS,
@@ -35,56 +32,77 @@ from paper_trading.core.order_manager import (
     Side,
     make_event,
 )
+from core.clock import ClockService
+from core.event_bus import EventBus
+from core.events import ORDER_REJECTED
+from paper_trading.core.account_ledger import AccountLedger
 from paper_trading.utils.logger import get_logger
 
 log = get_logger("risk_mgr")
 
-
 class RiskManager:
     """
     Stateful risk manager that tracks daily limits.
-
-    Resets automatically at the day boundary.
+    Resets automatically at the day boundary using ClockService.
     """
 
-    def __init__(self, initial_capital: float = INITIAL_CAPITAL) -> None:
-        self._initial_capital = initial_capital
-        self._current_date: date = date.today()
+    def __init__(
+        self,
+        clock: Optional[ClockService] = None,
+        event_bus: Optional[EventBus] = None,
+        ledger: Optional[AccountLedger] = None,
+        session_id: str = "test_session",
+        initial_capital: float = 10000.0
+    ) -> None:
+        if clock is None:
+            from core.clock import ClockService
+            clock = ClockService(mode="live")
+        if event_bus is None:
+            from core.event_bus import EventBus
+            event_bus = EventBus()
+        if ledger is None:
+            from core.database import Database
+            from paper_trading.core.account_ledger import AccountLedger
+            self._db_path = "test_risk_manager.db"
+            import os
+            if os.path.exists(self._db_path):
+                try:
+                    os.remove(self._db_path)
+                except Exception:
+                    pass
+            db = Database(db_path=self._db_path)
+            db.migrate()
+            ledger = AccountLedger(db, clock, event_bus, session_id, initial_capital)
+            
+        self._clock = clock
+        self._event_bus = event_bus
+        self._ledger = ledger
+        self._session_id = session_id
+        
+        self._current_date: date = self._clock.now().date()
         self._daily_trades: int = 0
         self._daily_realised_pnl: float = 0.0
         self._rejections: List[RejectedOrder] = []
 
-    # ── Public API ────────────────────────────────────────────────
+    def check_order(self, request: OrderRequest, open_position_count: int, current_balance: Optional[float] = None, timestamp: Optional[datetime] = None) -> Tuple[bool, str]:
+        self._maybe_reset_day(timestamp)
+        request.session_id = self._session_id
 
-    def check_order(
-        self,
-        request: OrderRequest,
-        open_position_count: int,
-        current_balance: float,
-        timestamp: Optional[datetime] = None,
-    ) -> Tuple[bool, str]:
-        """
-        Run all risk gates on an incoming order request.
-
-        Args:
-            timestamp: Optional datetime to use for day-boundary checks.
-                       In replay mode, pass the row's timestamp so that
-                       daily limits reset at the correct date boundary
-                       (instead of using ``date.today()``).
-
-        Returns:
-            (approved, reason) -- True if all gates pass, False with reason.
-        """
-        self._maybe_reset_day(override_date=timestamp.date() if timestamp else None)
-
-        # Gate 1: Daily loss limit
-        max_loss = self._initial_capital * MAX_DAILY_LOSS_PCT
+        # Gate 1: Daily loss limit & Max Drawdown
+        peak_equity = current_balance if current_balance is not None else self._ledger.peak_equity
+        max_loss = peak_equity * MAX_DAILY_LOSS_PCT
         if self._daily_realised_pnl < 0 and abs(self._daily_realised_pnl) >= max_loss:
             reason = (
                 f"Daily loss limit reached: "
                 f"${abs(self._daily_realised_pnl):,.2f} losses today "
                 f"(limit: ${max_loss:,.2f} = {MAX_DAILY_LOSS_PCT*100:.1f}% of capital)"
             )
+            self._reject(request, reason)
+            return False, reason
+            
+        drawdown_pct = self._ledger.drawdown_pct
+        if drawdown_pct > 0.05:
+            reason = f"Max Drawdown reached: {drawdown_pct*100:.2f}% (Limit: 5.00%)"
             self._reject(request, reason)
             return False, reason
 
@@ -168,9 +186,6 @@ class RiskManager:
             return False, reason
 
         rr_ratio = reward / risk
-        # Add a tolerance epsilon (0.05) to avoid rejections caused by 
-        # 2-decimal price rounding in the strategy layer which can make 
-        # an exact 2.0 R:R appear as 1.99.
         if rr_ratio < (MIN_REWARD_RISK - 0.05):
             reason = (
                 f"R:R too low: {rr_ratio:.2f} "
@@ -179,17 +194,65 @@ class RiskManager:
             self._reject(request, reason)
             return False, reason
 
-        # All gates passed
+        # Gate 7: Geopolitical / Macro News Risk Gate
+        news_risk_filter = False
+        try:
+            from api.store import store
+            settings = store.get_settings()
+            news_risk_filter = getattr(settings, "news_risk_filter", False)
+        except Exception as e:
+            log.warning(f"Could not load news_risk_filter from settings: {e}")
+
+        if news_risk_filter:
+            try:
+                # Query db for high impact RISK_OFF events in the last 2 hours
+                # SQLite timestamp is stored in ISO format: '2026-06-29T11:48:18.123+00:00'
+                recent_events = self._ledger._db.fetchall("""
+                    SELECT headline, timestamp FROM news_events 
+                    WHERE impact_score = 'HIGH' 
+                      AND sentiment = 'RISK_OFF'
+                      AND datetime(timestamp) >= datetime('now', '-2 hours')
+                    ORDER BY timestamp DESC
+                """)
+                if recent_events:
+                    reason = (
+                        f"Blocked by Macro News Gate: Recent High Impact Geopolitical Alert "
+                        f"({recent_events[0]['headline'][:40]}...)"
+                    )
+                    self._reject(request, reason)
+                    return False, reason
+            except Exception as e:
+                log.error(f"Error checking recent news events in RiskManager: {e}", exc_info=True)
+
+        # Gate 8: Per-trade risk limit ($100 maximum risk)
+        from paper_trading.config.settings import LOT_SIZE
+        if request.side == Side.LONG:
+            calculated_risk = (request.requested_price - request.stop_loss) * request.lots * LOT_SIZE
+        else:
+            calculated_risk = (request.stop_loss - request.requested_price) * request.lots * LOT_SIZE
+
+        calculated_risk = round(max(0.0, calculated_risk), 2)
+        if calculated_risk > 100.0:
+            reason = f"Order risk ${calculated_risk:.2f} exceeds per-trade risk limit of $100.00"
+            self._reject(request, reason)
+            return False, reason
+
+        # Gate 9: Daily trading basket limit ($1,000 maximum daily committed risk)
+        daily_committed = self.get_daily_committed_risk(timestamp)
+        if daily_committed + calculated_risk > 1000.0:
+            reason = f"Order risk ${calculated_risk:.2f} would exceed daily committed risk limit of $1000.00 (current committed: ${daily_committed:.2f})"
+            self._reject(request, reason)
+            return False, reason
+
         log.debug(
-            f"Order #{request.order_id} approved: "
+            f"Order request approved: "
             f"{request.side.value} {request.lots:.4f} lots, "
             f"confidence={request.confidence}, R:R={rr_ratio:.2f}"
         )
         return True, "APPROVED"
 
     def record_trade_result(self, pnl: float, timestamp: Optional[datetime] = None) -> None:
-        """Record a closed trade's P&L for daily tracking."""
-        self._maybe_reset_day(override_date=timestamp.date() if timestamp else None)
+        self._maybe_reset_day(timestamp)
         self._daily_realised_pnl += pnl
         self._daily_trades += 1
         log.debug(
@@ -197,14 +260,12 @@ class RiskManager:
             f"realised_pnl=${self._daily_realised_pnl:,.2f}"
         )
 
-    @property
-    def daily_trades(self) -> int:
-        self._maybe_reset_day()
+    def daily_trades(self, timestamp: Optional[datetime] = None) -> int:
+        self._maybe_reset_day(timestamp)
         return self._daily_trades
 
-    @property
-    def daily_pnl(self) -> float:
-        self._maybe_reset_day()
+    def daily_pnl(self, timestamp: Optional[datetime] = None) -> float:
+        self._maybe_reset_day(timestamp)
         return self._daily_realised_pnl
 
     @property
@@ -212,22 +273,14 @@ class RiskManager:
         return self._rejections
 
     def reset(self) -> None:
-        """Force reset daily counters (used in replay mode)."""
         self._daily_trades = 0
         self._daily_realised_pnl = 0.0
-        self._current_date = date.today()
+        self._current_date = self._clock.now().date()
 
-    # ── Private ───────────────────────────────────────────────────
-
-    def _maybe_reset_day(self, override_date: Optional[date] = None) -> None:
-        """Reset daily counters if the date has changed.
-
-        Args:
-            override_date: If provided, use this date instead of
-                ``date.today()``.  Essential for replay mode where
-                wall-clock time doesn't advance.
-        """
-        today = override_date or date.today()
+    def _maybe_reset_day(self, current_time: Optional[datetime] = None) -> None:
+        if current_time is None:
+            current_time = self._clock.now()
+        today = current_time.date() if hasattr(current_time, 'date') else current_time
         if today != self._current_date:
             log.info(
                 f"Day rollover: {self._current_date} -> {today}. "
@@ -240,7 +293,6 @@ class RiskManager:
             self._current_date = today
 
     def _reject(self, request: OrderRequest, reason: str) -> None:
-        """Log and record a rejected order."""
         rejection = RejectedOrder(
             order_id=request.order_id,
             side=request.side,
@@ -248,7 +300,40 @@ class RiskManager:
             lots=request.lots,
             confidence=request.confidence,
             rejection_reason=reason,
-            timestamp=datetime.now(),
+            timestamp=self._clock.now(),
+            session_id=self._session_id
         )
         self._rejections.append(rejection)
-        log.warning(f"Order #{request.order_id} REJECTED: {reason}")
+        log.warning(f"Order REJECTED: {reason}")
+        
+        self._event_bus.publish(ORDER_REJECTED, make_event(
+            ORDER_REJECTED,
+            order_id=request.order_id,
+            side=request.side.value,
+            reason=reason,
+            session_id=self._session_id
+        ))
+
+    def get_daily_committed_risk(self, timestamp: Optional[datetime] = None) -> float:
+        if timestamp is None:
+            timestamp = self._clock.now()
+        
+        today_str = timestamp.strftime("%Y-%m-%d")
+        
+        # 1. Closed trades today
+        sql_trades = """
+            SELECT SUM(risk_amount) FROM trades
+            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
+        """
+        row_t = self._ledger._db.fetchone(sql_trades, (self._session_id, today_str))
+        trades_risk = row_t[0] if (row_t and row_t[0] is not None) else 0.0
+
+        # 2. Open positions opened today
+        sql_positions = """
+            SELECT SUM(risk_amount) FROM positions
+            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
+        """
+        row_p = self._ledger._db.fetchone(sql_positions, (self._session_id, today_str))
+        positions_risk = row_p[0] if (row_p and row_p[0] is not None) else 0.0
+
+        return float(trades_risk + positions_risk)

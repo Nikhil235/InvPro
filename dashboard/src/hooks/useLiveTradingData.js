@@ -1,32 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 
-export function useLiveTradingData(wsUrl, restUrl, onMessage) {
-    const [data, setData] = useState(null);
+export function useLiveTradingData(wsUrl, onMessage) {
+    const [data, setData] = useState(null); // The latest tick data
     const [status, setStatus] = useState('connecting'); // connected, reconnecting, error
     const [isStale, setIsStale] = useState(false);
+    const [isMarketClosed, setIsMarketClosed] = useState(false);
     const wsRef = useRef(null);
     const lastUpdateRef = useRef(Date.now());
     const reconnectTimeoutRef = useRef(null);
-
-    // Initial fetch via REST to get current state immediately
-    useEffect(() => {
-        const fetchInitialState = async () => {
-            try {
-                const res = await fetch(restUrl);
-                if (res.ok) {
-                    const json = await res.json();
-                    if (json.timestamp) {
-                        setData(json);
-                        lastUpdateRef.current = Date.now();
-                        setIsStale(false);
-                    }
-                }
-            } catch (err) {
-                console.error("Failed to fetch initial state:", err);
-            }
-        };
-        fetchInitialState();
-    }, [restUrl]);
 
     useEffect(() => {
         let isComponentMounted = true;
@@ -40,6 +21,10 @@ export function useLiveTradingData(wsUrl, restUrl, onMessage) {
             wsRef.current.onopen = () => {
                 if (!isComponentMounted) return;
                 setStatus('connected');
+                if (retryCount > 0) {
+                    // Reconnected successfully
+                    console.log("Reconnected successfully.");
+                }
                 retryCount = 0; // Reset backoff
             };
             
@@ -47,12 +32,28 @@ export function useLiveTradingData(wsUrl, restUrl, onMessage) {
                 if (!isComponentMounted) return;
                 try {
                     const message = JSON.parse(event.data);
+                    
+                    // message format from backend: {"event": "...", "data": {...}}
                     if (onMessage) onMessage(message);
                     
-                    if (message.type === 'SIGNAL_UPDATE') {
-                        setData(message.payload);
+                    if (message.event === 'TICK' || message.event === 'SIGNAL') {
+                        setData(message.data);
                         lastUpdateRef.current = Date.now();
                         setIsStale(false);
+                    }
+                    
+                    if (message.event === 'SESSION_STATUS') {
+                        if (message.data.state === 'stale') {
+                            setIsStale(true);
+                            setIsMarketClosed(false);
+                        } else if (message.data.state === 'market_closed') {
+                            setIsStale(false);
+                            setIsMarketClosed(true);
+                        } else if (message.data.state === 'running') {
+                            setIsStale(false);
+                            setIsMarketClosed(false);
+                            lastUpdateRef.current = Date.now();
+                        }
                     }
                 } catch (e) {
                     console.error("Failed to parse WS message", e);
@@ -79,6 +80,7 @@ export function useLiveTradingData(wsUrl, restUrl, onMessage) {
         connect();
 
         const staleCheckInterval = setInterval(() => {
+            // Considered stale if no tick received for 15 seconds
             if (Date.now() - lastUpdateRef.current > 15000) {
                 setIsStale(true);
             }
@@ -97,5 +99,5 @@ export function useLiveTradingData(wsUrl, restUrl, onMessage) {
         };
     }, [wsUrl]);
 
-    return { data, status, isStale };
+    return { data, status, isStale, isMarketClosed };
 }

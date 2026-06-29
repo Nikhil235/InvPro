@@ -75,6 +75,9 @@ class StrategySignal:
     entry_price:      Optional[float] = None
     stop_loss:        Optional[float] = None
     take_profit:      Optional[float] = None
+    tp1:              Optional[float] = None
+    tp2:              Optional[float] = None
+    tp3:              Optional[float] = None
     position_size_lots: Optional[float] = None
     risk_amount:      Optional[float] = None
     reason:           str = ""
@@ -155,7 +158,7 @@ class ATRApproximator:
 
     @property
     def ready(self) -> bool:
-        return self._atr is not None
+        return len(self._ranges) >= 2
 
     @property
     def data_points(self) -> int:
@@ -198,7 +201,15 @@ class TradingStrategy:
     is updated on every tick.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        db: Optional[Any] = None,
+        session_id: Optional[str] = None,
+        clock: Optional[Any] = None
+    ) -> None:
+        self._db = db
+        self._session_id = session_id
+        self._clock = clock
         self._atr = ATRApproximator(
             period=ATR_PERIOD,
             window_size=60,  # ~5 min window at 5 s tick
@@ -214,7 +225,7 @@ class TradingStrategy:
 
     # ── Public API ────────────────────────────────────────────────
 
-    def evaluate(self, row: Dict[str, Any]) -> Optional[StrategySignal]:
+    def evaluate(self, row: Dict[str, Any], current_balance: float = ACCOUNT_BALANCE) -> Optional[StrategySignal]:
         """
         Evaluate the strategy for a parsed data row.
 
@@ -230,19 +241,20 @@ class TradingStrategy:
         if self._cycle % STRATEGY_EVAL_INTERVAL != 0:
             return self._last_signal  # Re-use previous signal for Excel
 
-        signal = self._compute_signal(row)
+        signal = self._compute_signal(row, current_balance)
         self._last_signal = signal
 
-        if signal.direction != "FLAT":
-            log.info(f"Strategy signal: {signal}")
-        else:
-            log.debug(f"Strategy signal: {signal}")
+        if signal is not None:
+            if signal.direction != "FLAT":
+                log.info(f"Strategy signal: {signal}")
+            else:
+                log.debug(f"Strategy signal: {signal}")
 
         return signal
 
     # ── Private logic ─────────────────────────────────────────────
 
-    def _compute_signal(self, row: Dict[str, Any]) -> StrategySignal:
+    def _compute_signal(self, row: Dict[str, Any], current_balance: float) -> StrategySignal:
         """Core decision logic."""
         now = row.get("Date-Time", datetime.now())
         price = row.get("Price")
@@ -320,13 +332,30 @@ class TradingStrategy:
 
         if bias_dir == "LONG":
             stop_loss   = price - stop_distance
-            take_profit = price + (stop_distance * MIN_REWARD_RISK_RATIO)
+            tp1         = price + (stop_distance * 1.0)
+            tp2         = price + (stop_distance * 2.0)
+            tp3         = price + (stop_distance * 3.0)
+            take_profit = tp3
         else:
             stop_loss   = price + stop_distance
-            take_profit = price - (stop_distance * MIN_REWARD_RISK_RATIO)
+            tp1         = price - (stop_distance * 1.0)
+            tp2         = price - (stop_distance * 2.0)
+            tp3         = price - (stop_distance * 3.0)
+            take_profit = tp3
 
-        # Risk amount in USD
-        risk_amount = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
+        # Daily committed risk calculation
+        daily_committed = self._get_daily_committed_risk(now)
+        remaining_daily_basket = max(0.0, 1000.0 - daily_committed)
+
+        # Risk amount in USD (capped at $100 and remaining daily basket)
+        risk_amount = min(current_balance * RISK_PER_TRADE_PCT, 100.0, remaining_daily_basket)
+
+        if risk_amount <= 0.01:
+            log.warning(
+                f"Strategy: Risk basket exhausted or too small (committed: ${daily_committed:.2f}, "
+                f"remaining: ${remaining_daily_basket:.2f}). No signal emitted."
+            )
+            return None
 
         # Position size: risk_amount / (stop_distance per unit)
         # For XAU/USD, 1 lot = LOT_SIZE oz, so P&L per lot = price_change × LOT_SIZE
@@ -353,12 +382,40 @@ class TradingStrategy:
             entry_price=round(price, 2),
             stop_loss=round(stop_loss, 2),
             take_profit=round(take_profit, 2),
+            tp1=round(tp1, 2),
+            tp2=round(tp2, 2),
+            tp3=round(tp3, 2),
             position_size_lots=round(position_lots, 4),
             risk_amount=round(risk_amount, 2),
             reason=reason,
         )
 
     # ── Helpers ───────────────────────────────────────────────────
+
+    def _get_daily_committed_risk(self, timestamp: datetime) -> float:
+        if not self._db or not self._session_id:
+            return 0.0
+        
+        today_str = timestamp.strftime("%Y-%m-%d")
+        
+        # 1. Closed trades today
+        sql_trades = """
+            SELECT SUM(risk_amount) FROM trades
+            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
+        """
+        row_t = self._db.fetchone(sql_trades, (self._session_id, today_str))
+        trades_risk = row_t[0] if (row_t and row_t[0] is not None) else 0.0
+
+        # 2. Open positions opened today
+        sql_positions = """
+            SELECT SUM(risk_amount) FROM positions
+            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
+        """
+        row_p = self._db.fetchone(sql_positions, (self._session_id, today_str))
+        positions_risk = row_p[0] if (row_p and row_p[0] is not None) else 0.0
+
+        return float(trades_risk + positions_risk)
+
 
     def _flat(
         self,

@@ -8,11 +8,17 @@ export function usePaginatedFetch(baseUrl, limit = 50) {
   const [offset, setOffset] = useState(0);
 
   const fetchPage = useCallback(async (currentOffset, append = false) => {
+    if (!baseUrl) {
+      setLoading(false);
+      return;
+    }
+
     if (append) setLoadingMore(true);
     else setLoading(true);
 
     try {
-      const res = await fetch(`${baseUrl}?limit=${limit}&offset=${currentOffset}`);
+      const sep = baseUrl.includes('?') ? '&' : '?';
+      const res = await fetch(`${baseUrl}${sep}limit=${limit}&offset=${currentOffset}`);
       if (res.ok) {
         const newData = await res.json();
         

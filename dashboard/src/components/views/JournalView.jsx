@@ -3,8 +3,11 @@ import { usePaginatedFetch } from '../../hooks/usePaginatedFetch';
 import { API_BASE_URL } from '../../config';
 
 
+import { useLiveData } from '../../contexts/LiveDataContext';
+
 export function JournalView() {
-  const { data: trades, loading, loadingMore, hasMore, loadMore, error } = usePaginatedFetch(`${API_BASE_URL}/api/v1/trades`, 50);
+  const { activeSessionId } = useLiveData() || {};
+  const { data: trades, loading, loadingMore, hasMore, loadMore, error } = usePaginatedFetch(activeSessionId ? `${API_BASE_URL}/api/trades?session_id=${activeSessionId}` : null, 50);
 
   const formatTime = (ts) => {
     if (!ts) return '';

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
+import { Badge } from '../ui/badge';
 import { Shield } from 'lucide-react';
 import { API_BASE_URL } from '../../config';
 
@@ -12,6 +13,8 @@ export function RiskMetricsCard() {
     open_pnl: 0.0
   });
 
+  const [error, setError] = useState(false);
+
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
@@ -19,9 +22,13 @@ export function RiskMetricsCard() {
         if (res.ok) {
           const data = await res.json();
           setMetrics(data);
+          setError(false);
+        } else {
+          setError(true);
         }
       } catch (err) {
         console.error('Failed to fetch metrics:', err);
+        setError(true);
       }
     };
 
@@ -31,7 +38,12 @@ export function RiskMetricsCard() {
   }, []);
 
   return (
-    <Card className="col-span-12 lg:col-span-4 border-border">
+    <Card className="col-span-12 lg:col-span-4 border-border relative">
+      {error && (
+        <div className="absolute top-2 right-2 flex gap-2">
+          <Badge variant="bearish">Network Error</Badge>
+        </div>
+      )}
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium text-secondary flex items-center gap-2">
           <Shield className="h-4 w-4 text-gold" />

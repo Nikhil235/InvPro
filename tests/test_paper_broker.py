@@ -27,7 +27,42 @@ def _make_order(**overrides) -> OrderRequest:
 
 class TestPaperBroker:
     def setup_method(self):
-        self.broker = PaperBroker(initial_capital=10_000.0)
+        import os
+        from core.database import Database
+        from core.clock import ClockService
+        from core.event_bus import EventBus
+        from paper_trading.core.account_ledger import AccountLedger
+        
+        self.db_path = "test_trading_broker.db"
+        if os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
+                
+        self.db = Database(db_path=self.db_path)
+        self.db.migrate()
+        self.clock = ClockService(mode="live")
+        self.event_bus = EventBus()
+        self.session_id = "test_session"
+        self.ledger = AccountLedger(self.db, self.clock, self.event_bus, self.session_id, 10_000.0)
+        self.broker = PaperBroker(self.db, self.clock, self.event_bus, self.ledger, self.session_id)
+
+    def teardown_method(self):
+        import os
+        # Close connection to allow file deletion on Windows
+        if hasattr(self, 'db'):
+            self.db = None
+        
+        # Give a small delay to make sure SQLite releases the file handle
+        import time
+        time.sleep(0.1)
+        
+        if hasattr(self, 'db_path') and os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
 
     # ── Order fill ────────────────────────────────────────────────
 
@@ -106,3 +141,39 @@ class TestPaperBroker:
         closed = self.broker.close_all_positions(price=4105.00)
         assert len(closed) == 2
         assert self.broker.open_position_count == 0
+
+    def test_closed_trades_property(self):
+        order = _make_order()
+        self.broker.submit_order(order)
+        self.broker.close_all_positions(price=4105.00)
+        
+        trades = self.broker.closed_trades
+        assert len(trades) == 1
+        assert trades[0].exit_price == 4105.00
+        assert trades[0].session_id == self.session_id
+
+    def test_invalid_close_price_fallback_and_guard(self):
+        import math
+        order = _make_order()
+        self.broker.submit_order(order)
+        pos_id = list(self.broker._positions.keys())[0]
+        
+        # 1. Close with NaN -> should fallback to fill_price
+        closed = self.broker.close_position(pos_id, price=float('nan'))
+        assert closed is not None
+        assert math.isfinite(closed.exit_price)
+        assert closed.exit_price == closed.fill_price
+        
+        # 2. Try to close again -> guard should prevent second close (returns None)
+        closed_again = self.broker.close_position(pos_id, price=4100.00)
+        assert closed_again is None
+
+    def test_invalid_close_price_zero_fallback(self):
+        order = _make_order()
+        self.broker.submit_order(order)
+        pos_id = list(self.broker._positions.keys())[0]
+        
+        # Close with 0 -> fallback to fill_price
+        closed = self.broker.close_position(pos_id, price=0.0)
+        assert closed is not None
+        assert closed.exit_price == closed.fill_price
