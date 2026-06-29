@@ -532,9 +532,6 @@ class PaperBroker:
 
         rr_achieved = (reward_dist / risk_dist) if risk_dist > 0 else 0.0
 
-        # Partition risk amount proportionally
-        leg_risk = round(pos.risk_amount * (close_lots / pos.lots), 2) if pos.lots > 0 else 0.0
-
         # Insert to trades table
         sql = """
             INSERT INTO trades (
@@ -549,7 +546,7 @@ class PaperBroker:
             pos.order_id, position_id, pos.side.value, pos.entry_price, pos.fill_price, exit_price,
             pos.stop_loss, pos.take_profit, close_lots, pos.open_time.isoformat(), timestamp.isoformat(),
             reason.value, round(gross_pnl, 2), round(total_commission, 2), round(net_pnl, 2),
-            leg_risk, round(rr_achieved, 2), pos.confidence, pos.bias,
+            pos.risk_amount, round(rr_achieved, 2), pos.confidence, pos.bias,
             round(self._ledger.balance, 2), pos.reason, self._session_id, pos.strategy_blob,
             pos.execution_mode, pos.slippage_model, pos.slippage_points_applied,
             pos.tp1, pos.tp2, pos.tp3
@@ -562,12 +559,11 @@ class PaperBroker:
         else:
             pos.lots = round(pos.lots - close_lots, 4)
             pos.realised_pnl = round(pos.realised_pnl + net_pnl, 2)
-            pos.risk_amount = round(pos.risk_amount - leg_risk, 2)
             self._db.execute("""
                 UPDATE positions 
-                SET lots = ?, realised_pnl = ?, tp1_hit = ?, tp2_hit = ?, tp3_hit = ?, stop_loss = ?, risk_amount = ?
+                SET lots = ?, realised_pnl = ?, tp1_hit = ?, tp2_hit = ?, tp3_hit = ?, stop_loss = ?
                 WHERE position_id = ?
-            """, (pos.lots, pos.realised_pnl, 1 if pos.tp1_hit else 0, 1 if pos.tp2_hit else 0, 1 if pos.tp3_hit else 0, pos.stop_loss, pos.risk_amount, position_id))
+            """, (pos.lots, pos.realised_pnl, 1 if pos.tp1_hit else 0, 1 if pos.tp2_hit else 0, 1 if pos.tp3_hit else 0, pos.stop_loss, position_id))
 
         trade = ClosedTrade(
             trade_id=trade_id,
@@ -586,7 +582,7 @@ class PaperBroker:
             gross_pnl=round(gross_pnl, 2),
             commission=round(total_commission, 2),
             net_pnl=round(net_pnl, 2),
-            risk_amount=leg_risk,
+            risk_amount=pos.risk_amount,
             rr_achieved=round(rr_achieved, 2),
             confidence=pos.confidence,
             bias=pos.bias,

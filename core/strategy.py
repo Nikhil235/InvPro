@@ -201,15 +201,7 @@ class TradingStrategy:
     is updated on every tick.
     """
 
-    def __init__(
-        self,
-        db: Optional[Any] = None,
-        session_id: Optional[str] = None,
-        clock: Optional[Any] = None
-    ) -> None:
-        self._db = db
-        self._session_id = session_id
-        self._clock = clock
+    def __init__(self) -> None:
         self._atr = ATRApproximator(
             period=ATR_PERIOD,
             window_size=60,  # ~5 min window at 5 s tick
@@ -343,19 +335,8 @@ class TradingStrategy:
             tp3         = price - (stop_distance * 3.0)
             take_profit = tp3
 
-        # Daily committed risk calculation
-        daily_committed = self._get_daily_committed_risk(now)
-        remaining_daily_basket = max(0.0, 1000.0 - daily_committed)
-
-        # Risk amount in USD (capped at $100 and remaining daily basket)
-        risk_amount = min(current_balance * RISK_PER_TRADE_PCT, 100.0, remaining_daily_basket)
-
-        if risk_amount <= 0.01:
-            log.warning(
-                f"Strategy: Risk basket exhausted or too small (committed: ${daily_committed:.2f}, "
-                f"remaining: ${remaining_daily_basket:.2f}). No signal emitted."
-            )
-            return None
+        # Risk amount in USD
+        risk_amount = current_balance * RISK_PER_TRADE_PCT
 
         # Position size: risk_amount / (stop_distance per unit)
         # For XAU/USD, 1 lot = LOT_SIZE oz, so P&L per lot = price_change × LOT_SIZE
@@ -392,29 +373,7 @@ class TradingStrategy:
 
     # ── Helpers ───────────────────────────────────────────────────
 
-    def _get_daily_committed_risk(self, timestamp: datetime) -> float:
-        if not self._db or not self._session_id:
-            return 0.0
-        
-        today_str = timestamp.strftime("%Y-%m-%d")
-        
-        # 1. Closed trades today
-        sql_trades = """
-            SELECT SUM(risk_amount) FROM trades
-            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
-        """
-        row_t = self._db.fetchone(sql_trades, (self._session_id, today_str))
-        trades_risk = row_t[0] if (row_t and row_t[0] is not None) else 0.0
 
-        # 2. Open positions opened today
-        sql_positions = """
-            SELECT SUM(risk_amount) FROM positions
-            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
-        """
-        row_p = self._db.fetchone(sql_positions, (self._session_id, today_str))
-        positions_risk = row_p[0] if (row_p and row_p[0] is not None) else 0.0
-
-        return float(trades_risk + positions_risk)
 
 
     def _flat(

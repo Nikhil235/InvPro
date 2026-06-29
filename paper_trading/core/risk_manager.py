@@ -224,25 +224,7 @@ class RiskManager:
             except Exception as e:
                 log.error(f"Error checking recent news events in RiskManager: {e}", exc_info=True)
 
-        # Gate 8: Per-trade risk limit ($100 maximum risk)
-        from paper_trading.config.settings import LOT_SIZE
-        if request.side == Side.LONG:
-            calculated_risk = (request.requested_price - request.stop_loss) * request.lots * LOT_SIZE
-        else:
-            calculated_risk = (request.stop_loss - request.requested_price) * request.lots * LOT_SIZE
 
-        calculated_risk = round(max(0.0, calculated_risk), 2)
-        if calculated_risk > 100.0:
-            reason = f"Order risk ${calculated_risk:.2f} exceeds per-trade risk limit of $100.00"
-            self._reject(request, reason)
-            return False, reason
-
-        # Gate 9: Daily trading basket limit ($1,000 maximum daily committed risk)
-        daily_committed = self.get_daily_committed_risk(timestamp)
-        if daily_committed + calculated_risk > 1000.0:
-            reason = f"Order risk ${calculated_risk:.2f} would exceed daily committed risk limit of $1000.00 (current committed: ${daily_committed:.2f})"
-            self._reject(request, reason)
-            return False, reason
 
         log.debug(
             f"Order request approved: "
@@ -314,26 +296,4 @@ class RiskManager:
             session_id=self._session_id
         ))
 
-    def get_daily_committed_risk(self, timestamp: Optional[datetime] = None) -> float:
-        if timestamp is None:
-            timestamp = self._clock.now()
-        
-        today_str = timestamp.strftime("%Y-%m-%d")
-        
-        # 1. Closed trades today
-        sql_trades = """
-            SELECT SUM(risk_amount) FROM trades
-            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
-        """
-        row_t = self._ledger._db.fetchone(sql_trades, (self._session_id, today_str))
-        trades_risk = row_t[0] if (row_t and row_t[0] is not None) else 0.0
 
-        # 2. Open positions opened today
-        sql_positions = """
-            SELECT SUM(risk_amount) FROM positions
-            WHERE session_id = ? AND substr(open_time, 1, 10) = ?
-        """
-        row_p = self._ledger._db.fetchone(sql_positions, (self._session_id, today_str))
-        positions_risk = row_p[0] if (row_p and row_p[0] is not None) else 0.0
-
-        return float(trades_risk + positions_risk)

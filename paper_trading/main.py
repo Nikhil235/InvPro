@@ -167,7 +167,7 @@ def run_replay(file_path: str, capital: float) -> None:
     )
     risk_mgr = RiskManager(clock, event_bus, ledger, session_id)
     router = SignalRouter(broker, risk_mgr, event_bus)
-    strategy = TradingStrategy(db=db, session_id=session_id, clock=clock)
+    strategy = TradingStrategy()
     perf = PerformanceTracker(initial_capital=capital)
 
     print(f"  Processing {total_rows:,} rows...\n")
@@ -335,7 +335,7 @@ def run_live(capital: float) -> None:
         session_id=session_id
     )
     router = SignalRouter(broker, risk_mgr, event_bus)
-    strategy = TradingStrategy(db=db, session_id=session_id, clock=clock)
+    strategy = TradingStrategy()
     validator = DataValidator()
     storage = ExcelStorage()
     perf = PerformanceTracker(initial_capital=capital)
